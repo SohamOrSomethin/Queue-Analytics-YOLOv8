@@ -1,0 +1,9 @@
+.venv/
+*.mp4
+*.avi
+*.mov
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+yolov8n.pt
