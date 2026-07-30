@@ -2,6 +2,7 @@ from ultralytics import YOLO
 import cv2
 import time
 import numpy as np
+from datetime import datetime
 
 model = YOLO("yolov8n.pt")
 
@@ -19,6 +20,24 @@ queue_roi = np.array([
     [451, 330]
 ], dtype=np.int32)
 
+
+cashier_rois = [
+    np.array([
+        [[173,145],
+        [160,115],
+        [234,92],
+        [260,83],
+        [310,153],
+        [209,183]]
+    ], dtype=np.int32),
+    np.array([
+        [[205, 204],
+        [309, 159],
+        [379, 256],
+        [282, 288]]], dtype=np.int32)]
+
+
+recent_waits = []
 tracked = {}
 
 while True:
@@ -30,9 +49,9 @@ while True:
 
     results = model.track(
     frame,
-    persist=True #remember people from the previous frame and assign them an ID, we can track people using this.
+    persist=True,#remember people from the previous frame and assign them an ID, we can track people using this.
+    verbose=False 
     ) #list of result objects is stored in results (FOR EACH FRAME)
-
     count = 0
     for box in results[0].boxes: #since result is a list of result objects, we access the first result object using results[0] and then access the boxes attribute to get the all bounding boxes for all the detected objects.
     
@@ -41,10 +60,11 @@ while True:
         if cls == 0: #class 0 means a person
             conf = float(box.conf[0])
             name = model.names[cls]
+            if box.id is None:
+             continue
             track_id = int(box.id[0])
             label = f"ID:{track_id} {name} {conf:.2f}"
-            if box.id is None:
-               continue
+            
 
 
             x1, y1, x2, y2 = box.xyxy[0] #again a tensor storring coords of top left and bottom right corner of bounding box.
@@ -72,6 +92,14 @@ while True:
                 (255, 0, 0),
                 2
                 )
+            for roi in cashier_rois:
+                cv2.polylines(
+                frame,
+                [roi],
+                True,
+                (0,255,255),   # Yellow
+                2
+                )
             
             center_x = int((x1 + x2)/2)
             center_y = int((y1 + y2)/2)
@@ -84,18 +112,52 @@ while True:
             -1
             )
 
+            inside_cashier = False
+            for roi in cashier_rois:
+             if cv2.pointPolygonTest(
+                roi,
+                (center_x, center_y),
+                False
+                ) >= 0:
+                inside_cashier = True
+                break
+
             inside = cv2.pointPolygonTest(
             queue_roi,
             (center_x, center_y),
             False #dont calc dist
             )
+
+            if (
+            inside_cashier
+            and
+            track_id in tracked
+            and
+            tracked[track_id]["counted"]
+            and
+            not tracked[track_id]["served"]
+            ):
+               wait_time = current_time - tracked[track_id]["enter_time"]
+               print(f"Person {track_id} served after {wait_time:.2f} seconds")
+               recent_waits.append(wait_time)
+               print("Recent waits:")
+               for i, t in enumerate(recent_waits, start=1):
+                print(f"{i}: {t:.2f} s")
+                print("-" * 40)
+
+               tracked[track_id]["served"] = True
+               if len(recent_waits) > 20:
+                    recent_waits.pop(0)
+
+            
             #returns a positive value if the point is inside the polygon, negative if outside, and 0 if on the edge of the polygon.
             if (inside >= 0):
                  if track_id not in tracked:
                   tracked[track_id] = {
                     "enter_time": current_time, 
                     "last_seen": current_time,
-                    "counted": False
+                    "counted": False,
+                    "served": False
                     }
                  tracked[track_id]["last_seen"] = current_time
                  #update last seen
@@ -103,6 +165,7 @@ while True:
                  #calculate the time they spent inside the queue area by current time - time they entered
                  if time_inside >= 3 and tracked[track_id]["counted"] == False: #if they stayed inside for more than 3 secs make counted value true
                    tracked[track_id]["counted"] = True
+
 
     for person_id in list(tracked.keys()):
      if current_time - tracked[person_id]["last_seen"] > 2:
@@ -119,7 +182,23 @@ while True:
                 1,
                 (255,255,255),
                 2
-                )  
+                )
+    
+    if len(recent_waits) > 0:
+     recent_avg_wait = sum(recent_waits) / len(recent_waits)
+    else:
+     recent_avg_wait = 0
+    hour = datetime.now().hour
+
+    cv2.putText(
+                frame,
+                f"Avg Wait: {recent_avg_wait:.1f}s",
+                (20,80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255,255,255),
+                2
+                ) 
 
 
     cv2.imshow("People Detection", frame)

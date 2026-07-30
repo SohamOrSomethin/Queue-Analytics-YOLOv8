@@ -8,3 +8,4 @@ __pycache__/
 Thumbs.db
 yolov8n.pt
 *.pkl
+.venv/
