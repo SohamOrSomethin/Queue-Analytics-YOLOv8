@@ -12,7 +12,7 @@ def load_rois(json_path="rois.json"):
     cashier_rois = [np.array([roi], dtype=np.int32) for roi in data["cashier_rois"]]
     return queue_rois, cashier_rois
 
-def process_video(video_path, model, queue_rois, cashier_rois, show_window=True):
+def process_video(video_path, model, queue_rois, cashier_rois, show_window=True, frame_skip=2):
     cap = cv2.VideoCapture(video_path)
 
     recent_waits = []
@@ -20,6 +20,7 @@ def process_video(video_path, model, queue_rois, cashier_rois, show_window=True)
     count = 0
     queue_counts = [0] * len(queue_rois)
     hour = datetime.now().hour
+    frame_index = 0
 
     while True:
         success, frame = cap.read()
@@ -27,6 +28,11 @@ def process_video(video_path, model, queue_rois, cashier_rois, show_window=True)
 
         if not success:
             break
+            
+        frame_index += 1
+        
+        if frame_index % frame_skip != 0:
+            continue
 
         results = model.track(
             frame,
@@ -252,6 +258,9 @@ def stream_video_processing(video_path, model, queue_rois, cashier_rois, frame_s
             break
 
         frame_index += 1
+        
+        if frame_index % frame_skip != 0:
+            continue
         results = model.track(
             frame,
             persist=True, #remember people from the previous frame and assign them an ID, we can track people using this.
@@ -413,8 +422,7 @@ def stream_video_processing(video_path, model, queue_rois, cashier_rois, frame_s
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        if frame_index % frame_skip == 0:
-            yield frame_rgb, status_text
+        yield frame_rgb, status_text
 
     cap.release()
 

@@ -172,7 +172,7 @@ def format_roi_summary(roi_state):
     )
 
 
-def run_live_monitor(video_path, roi_state):
+def run_live_monitor(video_path, roi_state, frame_skip):
     if not video_path:
         yield None, "Please load a video first."
         return
@@ -199,7 +199,7 @@ def run_live_monitor(video_path, roi_state):
         model=yolo_model,
         queue_rois=queue_rois,
         cashier_rois=cashier_rois,
-        frame_skip=2
+        frame_skip=int(frame_skip)
     ):
         yield frame, status_text
 
@@ -215,37 +215,53 @@ with gr.Blocks() as demo:
         "current_points": []
     })
 
-    with gr.Row():
-        with gr.Column():
-            video_input = gr.Video(label="Upload CCTV Video (Optional)")
-            yt_url = gr.Textbox(
-                label="YouTube Live URL (Optional)",
-                placeholder="https://www.youtube.com/watch?v=..."
-            )
-            load_frame_btn = gr.Button("Load First Frame", variant="primary")
+    with gr.Tabs():
+        with gr.Tab("Step 1: Setup ROIs"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("### 1. Load Video")
+                    video_input = gr.Video(label="Upload CCTV Video (Optional)")
+                    yt_url = gr.Textbox(
+                        label="YouTube Live URL (Optional)",
+                        placeholder="https://www.youtube.com/watch?v=..."
+                    )
+                    load_frame_btn = gr.Button("Load First Frame", variant="primary")
 
-            roi_type = gr.Radio(
-                choices=["Queue", "Cashier"],
-                value="Queue",
-                label="ROI Type"
-            )
+                    gr.Markdown("### 2. Draw ROIs")
+                    roi_type = gr.Radio(
+                        choices=["Queue", "Cashier"],
+                        value="Queue",
+                        label="ROI Type"
+                    )
+                    with gr.Row():
+                        undo_btn = gr.Button("Undo Last Point")
+                        clear_btn = gr.Button("Clear Current Polygon")
+                    save_polygon_btn = gr.Button("Save Current Polygon", variant="secondary")
+                    
+                    gr.Markdown("### 3. Save Configuration")
+                    save_rois_btn = gr.Button("Save All ROIs to rois.json", variant="primary")
+                    
+                    roi_status = gr.Textbox(label="ROI Status", lines=3)
+                    roi_summary = gr.Textbox(label="ROI Summary", lines=4)
 
-            save_polygon_btn = gr.Button("Save Current Polygon")
-            undo_btn = gr.Button("Undo Last Point")
-            clear_btn = gr.Button("Clear Current Polygon")
-            save_rois_btn = gr.Button("Save All ROIs to rois.json")
-            start_btn = gr.Button("Start Monitoring", variant="primary")
+                with gr.Column(scale=2):
+                    roi_image = gr.Image(
+                        label="First Frame ROI Editor",
+                        type="numpy",
+                        interactive=True
+                    )
 
-        with gr.Column():
-            roi_image = gr.Image(
-                label="First Frame ROI Editor",
-                type="numpy",
-                interactive=True
-            )
-            roi_status = gr.Textbox(label="ROI Status", lines=6)
-            roi_summary = gr.Textbox(label="ROI Summary", lines=4)
-            live_frame = gr.Image(label="Live Processed Frame", type="numpy")
-            result_output = gr.Textbox(label="Live Wait Time Result", lines=10)
+        with gr.Tab("Step 2: Live Monitor"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("### Start Analytics")
+                    frame_skip_slider = gr.Slider(minimum=1, maximum=30, value=2, step=1, label="Frame Skip (Higher = Faster, Lower = More Accurate)")
+                    start_btn = gr.Button("Start Monitoring", variant="primary")
+                    result_output = gr.Textbox(label="Live Wait Time Result", lines=10)
+                
+                with gr.Column(scale=2):
+                    live_frame = gr.Image(label="Live Processed Frame", type="numpy")
+
 
     load_frame_btn.click(
         fn=extract_first_frame,
@@ -313,7 +329,7 @@ with gr.Blocks() as demo:
 
     start_btn.click(
         fn=run_live_monitor,
-        inputs=[video_path_state, roi_state],
+        inputs=[video_path_state, roi_state, frame_skip_slider],
         outputs=[live_frame, result_output]
     )
 
