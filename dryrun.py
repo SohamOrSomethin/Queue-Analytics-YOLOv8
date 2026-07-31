@@ -6,35 +6,47 @@ from datetime import datetime
 
 model = YOLO("yolov8n.pt")
 
-cap = cv2.VideoCapture("video.mp4")
+cap = cv2.VideoCapture("video2.mp4")
 
+# queue_roi = np.array([
+#     [318, 367],
+#     [181, 152],
+#     [174, 107],
+#     [391,  19],
+#     [440, 116],
+#     [381, 150],
+#     [340, 176],
+#     [434, 302],
+#     [451, 330]
+# ], dtype=np.int32)
 queue_roi = np.array([
-    [318, 367],
-    [181, 152],
-    [174, 107],
-    [391,  19],
-    [440, 116],
-    [381, 150],
-    [340, 176],
-    [434, 302],
-    [451, 330]
-], dtype=np.int32)
+[ 634,  553],
+ [1067 , 535],
+ [1093 , 708],
+ [ 640 , 712]], dtype=np.int32)
 
 
+# cashier_rois = [
+#     np.array([
+#         [[173,145],
+#         [160,115],
+#         [234,92],
+#         [260,83],
+#         [310,153],
+#         [209,183]]
+#     ], dtype=np.int32),
+#     np.array([
+#         [[205, 204],
+#         [309, 159],
+#         [379, 256],
+#         [282, 288]]], dtype=np.int32)]
 cashier_rois = [
-    np.array([
-        [[173,145],
-        [160,115],
-        [234,92],
-        [260,83],
-        [310,153],
-        [209,183]]
-    ], dtype=np.int32),
-    np.array([
-        [[205, 204],
-        [309, 159],
-        [379, 256],
-        [282, 288]]], dtype=np.int32)]
+np.array([
+[[362 ,589],
+ [633, 576],
+ [639, 715],
+ [354 ,710]]
+], dtype=np.int32)]
 
 
 recent_waits = []
@@ -139,10 +151,10 @@ while True:
             ):
                wait_time = current_time - tracked[track_id]["enter_time"]
                print(f"Person {track_id} served after {wait_time:.2f} seconds")
-               recent_waits.append(wait_time)
+               recent_waits.append((track_id, wait_time))
                print("Recent waits:")
-               for i, t in enumerate(recent_waits, start=1):
-                print(f"{i}: {t:.2f} s")
+               for i, (pid, t) in enumerate(recent_waits, start=1):
+                print(f"{i}: Person {pid} -> {t:.2f} s")
                 print("-" * 40)
 
                tracked[track_id]["served"] = True
@@ -185,7 +197,7 @@ while True:
                 )
     
     if len(recent_waits) > 0:
-     recent_avg_wait = sum(recent_waits) / len(recent_waits)
+     recent_avg_wait = sum(t for _, t in recent_waits) / len(recent_waits)
     else:
      recent_avg_wait = 0
     hour = datetime.now().hour

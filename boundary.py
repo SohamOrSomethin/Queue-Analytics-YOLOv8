@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-cap = cv2.VideoCapture("video.mp4")
+cap = cv2.VideoCapture("video2.mp4")
 ret, img = cap.read()
 cap.release()
 points = []
