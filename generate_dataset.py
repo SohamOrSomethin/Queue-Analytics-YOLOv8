@@ -1,5 +1,4 @@
 import cv2
-import time
 from datetime import datetime
 import csv
 import os
@@ -20,16 +19,25 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
         return
 
     model = YOLO("yolov8n.pt")
-    queue_roi, cashier_rois = load_rois("rois.json")
+    queue_rois, cashier_rois = load_rois("rois.json")
 
-    # Ensure CSV has headers if it doesn't exist
+    # FIX 3: Unified schema — matches what train_xgboost.py reads.
+    # Columns: hour, queue_size, recent_avg_wait_time, actual_wait
+    # Removed: party_size (we cannot detect it), queue_count (redundant with queue_size)
     if not os.path.exists(output_csv):
         with open(output_csv, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["queue_count", "hour", "actual_wait"])
+            writer.writerow(["hour", "queue_size", "recent_avg_wait_time", "actual_wait"])
 
     cap = cv2.VideoCapture(stream_url)
+
+    # FIX 1: Use video FPS for frame-based timestamps (consistent with process_video.py).
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
     tracked = {}
+    recent_waits = []
+    frame_index = 0
+
     print(f"Starting headless data generation to {output_csv}.")
     print("Press Ctrl+C to stop.")
 
@@ -40,47 +48,87 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                 print("Stream ended or error reading frame.")
                 break
 
-            current_time = time.time()
+            frame_index += 1
+            # FIX 1: video-time timestamp, not wall clock.
+            current_time = frame_index / fps
+
             results = model.track(frame, persist=True, verbose=False)
-            count = 0
 
             if results[0].boxes is not None:
                 for box in results[0].boxes:
                     cls = int(box.cls[0])
                     if cls != 0 or box.id is None:
                         continue
-                    
+
                     track_id = int(box.id[0])
                     x1, y1, x2, y2 = box.xyxy[0]
                     center_x, center_y = int((x1 + x2) / 2), int((y1 + y2) / 2)
 
-                    inside_cashier = any(cv2.pointPolygonTest(roi, (center_x, center_y), False) >= 0 for roi in cashier_rois)
-                    inside_queue = cv2.pointPolygonTest(queue_roi, (center_x, center_y), False) >= 0
+                    inside_cashier = any(
+                        cv2.pointPolygonTest(roi, (center_x, center_y), False) >= 0
+                        for roi in cashier_rois
+                    )
+                    inside_queue = any(
+                        cv2.pointPolygonTest(roi, (center_x, center_y), False) >= 0
+                        for roi in queue_rois
+                    )
 
-                    if inside_cashier and track_id in tracked and tracked[track_id]["counted"] and not tracked[track_id]["served"]:
+                    # Serve detection: person reaches cashier after being counted in queue
+                    if (
+                        inside_cashier
+                        and track_id in tracked
+                        and tracked[track_id]["counted"]
+                        and not tracked[track_id]["served"]
+                    ):
                         wait_time = current_time - tracked[track_id]["enter_time"]
                         tracked[track_id]["served"] = True
                         hour = datetime.now().hour
-                        
-                        # Write row to CSV
+
+                        # Queue size = number of currently-counted, non-served, non-cashier people
+                        queue_size = sum(
+                            1 for info in tracked.values()
+                            if info["counted"] and not info["served"] and not info.get("inside_cashier", False)
+                        )
+
+                        # Rolling average of recent actual wait times
+                        recent_waits.append(wait_time)
+                        if len(recent_waits) > 20:
+                            recent_waits.pop(0)
+                        recent_avg_wait = sum(recent_waits) / len(recent_waits)
+
+                        # FIX 3: Write unified schema row
                         with open(output_csv, "a", newline="") as f:
                             writer = csv.writer(f)
-                            writer.writerow([count, hour, round(wait_time, 2)])
-                        
-                        print(f"Logged Data Point -> Queue Size: {count}, Hour: {hour}, Wait Time: {wait_time:.2f}s")
+                            writer.writerow([
+                                hour,
+                                queue_size,
+                                round(recent_avg_wait, 2),
+                                round(wait_time, 2)
+                            ])
+
+                        print(
+                            f"Logged -> Hour: {hour}, Queue Size: {queue_size}, "
+                            f"Avg Wait: {recent_avg_wait:.2f}s, Actual Wait: {wait_time:.2f}s"
+                        )
 
                     if inside_queue:
                         if track_id not in tracked:
-                            tracked[track_id] = {"enter_time": current_time, "last_seen": current_time, "counted": False, "served": False}
+                            tracked[track_id] = {
+                                "enter_time": current_time,
+                                "last_seen": current_time,
+                                "counted": False,
+                                "served": False,
+                                "inside_cashier": False
+                            }
                         tracked[track_id]["last_seen"] = current_time
+                        tracked[track_id]["inside_cashier"] = inside_cashier
+
                         if current_time - tracked[track_id]["enter_time"] >= 3:
                             tracked[track_id]["counted"] = True
 
             for person_id in list(tracked.keys()):
                 if current_time - tracked[person_id]["last_seen"] > 2:
                     del tracked[person_id]
-            
-            count = sum(info["counted"] for info in tracked.values())
 
     except KeyboardInterrupt:
         print("Data generation stopped.")
