@@ -1,4 +1,7 @@
 import cv2
+import sys
+import subprocess
+import numpy as np
 from datetime import datetime
 import csv
 import os
@@ -6,50 +9,87 @@ from ultralytics import YOLO
 import yt_dlp
 from process_video import load_rois
 
+
 def resolve_youtube_stream(yt_url):
-    ydl_opts = {'format': 'best'}
+    """
+    Use yt-dlp to extract stream metadata.
+    Returns (stream_url, fps, width, height).
+    """
+    ydl_opts = {'format': 'best[ext=mp4]/best'}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(yt_url, download=False)
-        return info_dict.get('url', None)
+        info = ydl.extract_info(yt_url, download=False)
+        stream_url = info.get('url', None)
+        fps = float(info.get('fps') or 30)
+        width = int(info.get('width') or 1280)
+        height = int(info.get('height') or 720)
+        return stream_url, fps, width, height
+
+
+def open_ffmpeg_pipe(stream_url, width, height):
+    """
+    Pipe stream frames through a system ffmpeg subprocess.
+
+    Why: OpenCV's internal ffmpeg cannot handle YouTube CDN URL rotation mid-stream.
+    When the CDN URL expires it throws a TLS error and the capture dies.
+    System ffmpeg handles m3u8 playlists natively — it fetches new segment URLs
+    automatically and never drops the stream.
+    """
+    cmd = [
+        'ffmpeg',
+        '-loglevel', 'error',       # suppress ffmpeg noise
+        '-i', stream_url,
+        '-f', 'rawvideo',           # output raw pixel data
+        '-pix_fmt', 'bgr24',        # OpenCV expects BGR
+        '-vf', f'scale={width}:{height}',
+        'pipe:1'                    # write to stdout
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
 
 def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
-    stream_url = resolve_youtube_stream(yt_url)
+    print(f"Resolving stream URL for: {yt_url}")
+    stream_url, fps, width, height = resolve_youtube_stream(yt_url)
+
     if not stream_url:
-        print("Failed to get stream URL.")
+        print("ERROR: Failed to get stream URL. Is the stream live?")
         return
+
+    print(f"Stream URL resolved. FPS: {fps}, Resolution: {width}x{height}")
 
     model = YOLO("yolov8n.pt")
     queue_rois, cashier_rois = load_rois("rois.json")
 
-    # FIX 3: Unified schema — matches what train_xgboost.py reads.
-    # Columns: hour, queue_size, recent_avg_wait_time, actual_wait
-    # Removed: party_size (we cannot detect it), queue_count (redundant with queue_size)
+    # Schema: hour, queue_size, recent_avg_wait_time, actual_wait
     if not os.path.exists(output_csv):
         with open(output_csv, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["hour", "queue_size", "recent_avg_wait_time", "actual_wait"])
 
-    cap = cv2.VideoCapture(stream_url)
-
-    # FIX 1: Use video FPS for frame-based timestamps (consistent with process_video.py).
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    print("Opening stream via ffmpeg pipe (handles YouTube URL rotation)...")
+    pipe = open_ffmpeg_pipe(stream_url, width, height)
+    frame_size = width * height * 3  # bytes per frame
 
     tracked = {}
     recent_waits = []
     frame_index = 0
 
-    print(f"Starting headless data generation to {output_csv}.")
-    print("Press Ctrl+C to stop.")
+    print(f"Stream opened. FPS: {fps:.1f}. Recording to {output_csv}.")
+    print("Press Ctrl+C to stop.\n")
 
     try:
         while True:
-            success, frame = cap.read()
-            if not success:
-                print("Stream ended or error reading frame.")
+            raw = pipe.stdout.read(frame_size)
+
+            if len(raw) < frame_size:
+                print("Stream ended or frame read failed.")
                 break
 
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3))
+            frame = frame.copy()   # make writable for OpenCV drawing ops
+
             frame_index += 1
-            # FIX 1: video-time timestamp, not wall clock.
+            # Video-time timestamp — not wall-clock time.
+            # Frame skip / inference lag do not affect this.
             current_time = frame_index / fps
 
             results = model.track(frame, persist=True, verbose=False)
@@ -73,7 +113,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         for roi in queue_rois
                     )
 
-                    # Serve detection: person reaches cashier after being counted in queue
+                    # Person reached cashier → record their wait time
                     if (
                         inside_cashier
                         and track_id in tracked
@@ -84,22 +124,21 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         tracked[track_id]["served"] = True
                         hour = datetime.now().hour
 
-                        # Queue size = number of currently-counted, non-served, non-cashier people
+                        # Current queue size (excludes people at cashier)
                         queue_size = sum(
                             1 for info in tracked.values()
-                            if info["counted"] and not info["served"] and not info.get("inside_cashier", False)
+                            if info["counted"]
+                            and not info["served"]
+                            and not info.get("inside_cashier", False)
                         )
 
-                        # Rolling average of recent actual wait times
                         recent_waits.append(wait_time)
                         if len(recent_waits) > 20:
                             recent_waits.pop(0)
                         recent_avg_wait = sum(recent_waits) / len(recent_waits)
 
-                        # FIX 3: Write unified schema row
                         with open(output_csv, "a", newline="") as f:
-                            writer = csv.writer(f)
-                            writer.writerow([
+                            csv.writer(f).writerow([
                                 hour,
                                 queue_size,
                                 round(recent_avg_wait, 2),
@@ -107,8 +146,8 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                             ])
 
                         print(
-                            f"Logged -> Hour: {hour}, Queue Size: {queue_size}, "
-                            f"Avg Wait: {recent_avg_wait:.2f}s, Actual Wait: {wait_time:.2f}s"
+                            f"Logged -> Hour: {hour}  |  Queue: {queue_size}  |  "
+                            f"Avg Wait: {recent_avg_wait:.1f}s  |  This Wait: {wait_time:.1f}s"
                         )
 
                     if inside_queue:
@@ -126,14 +165,19 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         if current_time - tracked[track_id]["enter_time"] >= 3:
                             tracked[track_id]["counted"] = True
 
+            # Remove people not seen for 2 video-seconds
             for person_id in list(tracked.keys()):
                 if current_time - tracked[person_id]["last_seen"] > 2:
                     del tracked[person_id]
 
     except KeyboardInterrupt:
-        print("Data generation stopped.")
+        print("\nData generation stopped by user.")
     finally:
-        cap.release()
+        pipe.kill()
+
 
 if __name__ == "__main__":
-    generate_dataset_headless("https://www.youtube.com/watch?v=CmtuOVxcKRo")
+    # Usage: python generate_dataset.py
+    #    or: python generate_dataset.py "https://www.youtube.com/watch?v=YOUR_ID"
+    url = sys.argv[1] if len(sys.argv) > 1 else "https://www.youtube.com/watch?v=CmtuOVxcKRo"
+    generate_dataset_headless(url)
