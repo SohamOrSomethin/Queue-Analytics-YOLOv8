@@ -7,43 +7,8 @@ import csv
 import os
 from ultralytics import YOLO
 import yt_dlp
-from process_video import load_rois
+from process_video import load_rois, resolve_youtube_stream, open_ffmpeg_pipe
 
-
-def resolve_youtube_stream(yt_url):
-    """
-    Use yt-dlp to extract stream metadata.
-    Returns (stream_url, fps, width, height).
-    """
-    ydl_opts = {'format': 'best[ext=mp4]/best'}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(yt_url, download=False)
-        stream_url = info.get('url', None)
-        fps = float(info.get('fps') or 30)
-        width = int(info.get('width') or 1280)
-        height = int(info.get('height') or 720)
-        return stream_url, fps, width, height
-
-
-def open_ffmpeg_pipe(stream_url, width, height):
-    """
-    Pipe stream frames through a system ffmpeg subprocess.
-
-    Why: OpenCV's internal ffmpeg cannot handle YouTube CDN URL rotation mid-stream.
-    When the CDN URL expires it throws a TLS error and the capture dies.
-    System ffmpeg handles m3u8 playlists natively — it fetches new segment URLs
-    automatically and never drops the stream.
-    """
-    cmd = [
-        'ffmpeg',
-        '-loglevel', 'error',       # suppress ffmpeg noise
-        '-i', stream_url,
-        '-f', 'rawvideo',           # output raw pixel data
-        '-pix_fmt', 'bgr24',        # OpenCV expects BGR
-        '-vf', f'scale={width}:{height}',
-        'pipe:1'                    # write to stdout
-    ]
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
 def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):

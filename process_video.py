@@ -6,6 +6,7 @@ import csv
 import yt_dlp
 import os
 import subprocess
+import imageio_ffmpeg
 
 def load_rois(json_path="rois.json"):
     with open(json_path, "r") as f:
@@ -323,8 +324,11 @@ def open_ffmpeg_pipe(stream_url, width, height):
     System ffmpeg handles m3u8 playlists natively — it fetches new segment URLs
     automatically and never drops the stream.
     """
+    # Use the bundled ffmpeg binary from imageio-ffmpeg.
+    # This avoids requiring the user to install ffmpeg and add it to PATH.
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [
-        'ffmpeg',
+        ffmpeg_exe,
         '-loglevel', 'error',       # suppress ffmpeg noise
         '-i', stream_url,
         '-f', 'rawvideo',           # output raw pixel data
