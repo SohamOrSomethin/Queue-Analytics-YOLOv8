@@ -63,7 +63,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
     if not os.path.exists(output_csv):
         with open(output_csv, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["hour", "queue_size", "recent_avg_wait_time", "actual_wait"])
+            writer.writerow(["timestamp","hour", "queue_size", "recent_avg_wait_time", "actual_wait"])
 
     print("Opening stream via ffmpeg pipe (handles YouTube URL rotation)...")
     pipe = open_ffmpeg_pipe(stream_url, width, height)
@@ -123,6 +123,8 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         wait_time = current_time - tracked[track_id]["enter_time"]
                         tracked[track_id]["served"] = True
                         hour = datetime.now().hour
+                        now = datetime.now()
+                        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
                         # Current queue size (excludes people at cashier)
                         queue_size = sum(
@@ -139,6 +141,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
 
                         with open(output_csv, "a", newline="") as f:
                             csv.writer(f).writerow([
+                                timestamp,
                                 hour,
                                 queue_size,
                                 round(recent_avg_wait, 2),

@@ -5,18 +5,16 @@ import gradio as gr
 import yt_dlp
 from ultralytics import YOLO
 
-from process_video import stream_video_processing
+from process_video import process_video
+from process_video import resolve_youtube_stream
+from process_video import open_ffmpeg_pipe
 
 yolo_model = YOLO("yolov8n.pt")
 
 
 def resolve_video_path(video_input, yt_url=None):
-    if yt_url and ("youtube.com" in yt_url or "youtu.be" in yt_url):
-        # Use yt-dlp to extract stream URL
-        ydl_opts = {"format": "best"}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(yt_url, download=False)
-            return info_dict.get("url", "video2.mp4")
+    if yt_url:
+        return yt_url
 
     if video_input is None:
         return None
@@ -40,13 +38,37 @@ def extract_first_frame(video_input, yt_url):
         empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
         return None, None, empty_state, "Please upload a video or enter a YouTube live URL."
 
-    cap = cv2.VideoCapture(video_path)
-    ok, frame = cap.read()
-    cap.release()
+    is_youtube = (
+        "youtube.com" in video_path
+        or
+        "youtu.be" in video_path
+    )
 
-    if not ok:
-        empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
-        return None, None, empty_state, "Could not read the first frame from the selected video."
+    if is_youtube:
+        try:
+            stream_url, fps, width, height = resolve_youtube_stream(video_path)
+        except Exception as e:
+            empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
+            return None, None, empty_state, f"Could not resolve YouTube stream: {e}"
+
+        pipe = open_ffmpeg_pipe(stream_url, width, height)
+        frame_size = width * height * 3
+        raw = pipe.stdout.read(frame_size)
+        pipe.kill()
+
+        if len(raw) < frame_size:
+            empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
+            return None, None, empty_state, "Could not read the first frame from the YouTube stream."
+
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3)).copy()
+    else:
+        cap = cv2.VideoCapture(video_path)
+        ok, frame = cap.read()
+        cap.release()
+
+        if not ok:
+            empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
+            return None, None, empty_state, "Could not read the first frame from the selected video."
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     roi_state = {
@@ -194,15 +216,58 @@ def run_live_monitor(video_path, roi_state, frame_skip):
         yield None, "Please mark at least one Cashier ROI before starting."
         return
 
-    for frame, status_text in stream_video_processing(
+    is_youtube = (
+        "youtube.com" in video_path
+        or
+        "youtu.be" in video_path
+        )
+    
+    for frame,status in process_video(
+        video_path,
+        model=yolo_model,
+        queue_rois=queue_rois,
+        cashier_rois=cashier_rois,
+        frame_skip=int(frame_skip),
+        show_window=False,
+        gradio_mode=True,
+        generate_dataset=False,
+        is_youtube=is_youtube
+        ):
+        yield frame,status
+
+def generate_dataset(video_path, roi_state):
+
+    if not video_path:
+        return "Please load a video first."
+
+    queue_rois = [
+        np.array([roi], dtype=np.int32)
+        for roi in roi_state["queue_rois"]
+    ]
+
+    cashier_rois = [
+        np.array([roi], dtype=np.int32)
+        for roi in roi_state["cashier_rois"]
+    ]
+    is_youtube = (
+    "youtube.com" in video_path
+    or
+    "youtu.be" in video_path
+    )
+    
+    process_video(
         video_path=video_path,
         model=yolo_model,
         queue_rois=queue_rois,
         cashier_rois=cashier_rois,
-        frame_skip=int(frame_skip)
-    ):
-        yield frame, status_text
+        show_window=False,
+        generate_dataset=True,
+        csv_path="queue_data.csv",
+        is_youtube=is_youtube
+    )
+    
 
+    return "Dataset generation complete."
 
 with gr.Blocks() as demo:
     gr.Markdown("# Queue Analytics: ROI Setup + Live Queue Monitor")
@@ -240,6 +305,7 @@ with gr.Blocks() as demo:
                     
                     gr.Markdown("### 3. Save Configuration")
                     save_rois_btn = gr.Button("Save All ROIs to rois.json", variant="primary")
+                    gen_data_btn = gr.Button("Start generating dataset", variant="primary")
                     
                     roi_status = gr.Textbox(label="ROI Status", lines=3)
                     roi_summary = gr.Textbox(label="ROI Summary", lines=4)
@@ -276,6 +342,17 @@ with gr.Blocks() as demo:
         inputs=[roi_state],
         outputs=[roi_summary]
     )
+
+    gen_data_btn.click(
+    fn=generate_dataset,
+    inputs=[
+        video_path_state,
+        roi_state
+    ],
+    outputs=roi_status
+    )
+
+
 
     roi_image.select(
         fn=add_point,
