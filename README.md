@@ -11,8 +11,8 @@ Queue Analytics is an end-to-end computer vision and data engineering pipeline d
 
 ## Features
 
-- **Live Stream Processing:** Connects directly to YouTube live streams (via `yt-dlp` + `ffmpeg`) or local CCTV footage
-- **YOLOv8 Object Tracking:** Persistently tracks individuals across frames using frame-based timestamps (not wall-clock time) for accurate wait time measurement
+- **Live Stream Processing:** Connects directly to YouTube live streams (via `yt-dlp` + `imageio-ffmpeg`) or local CCTV footage — no manual ffmpeg installation required
+- **YOLOv8 Object Tracking:** Persistently tracks individuals across frames for accurate wait time measurement
 - **Cashier Zone Exclusion:** People at the cashier are excluded from the queue count to avoid double-counting
 - **Headless Dataset Generation:** Background script continuously logs real wait times to `queue_data.csv`
 - **Wait-Time Prediction (XGBoost):** Trains on the generated CSV to predict wait times from queue size and time of day
@@ -26,27 +26,9 @@ Queue Analytics is an end-to-end computer vision and data engineering pipeline d
 pip install -r requirements.txt
 ```
 
-### 2. Install ffmpeg (required for live stream capture)
+This installs everything including `imageio-ffmpeg`, which bundles its own ffmpeg binary. **You do not need to install ffmpeg separately or add it to your PATH.**
 
-ffmpeg handles YouTube CDN URL rotation — OpenCV alone drops the stream after ~30 seconds.
-
-```bash
-# Windows (via winget)
-winget install --id Gyan.FFmpeg -e
-
-# macOS
-brew install ffmpeg
-
-# Ubuntu/Debian
-sudo apt install ffmpeg
-```
-
-After installing, open a **new terminal** so `ffmpeg` is available in your PATH. Verify with:
-```bash
-ffmpeg -version
-```
-
-### 3. Draw your ROIs
+### 2. Draw your ROIs
 
 Launch the Gradio app and use the **Step 1: Setup ROIs** tab to draw your queue and cashier zones on your camera's first frame. Save them to `rois.json`.
 
@@ -100,6 +82,7 @@ This trains an XGBoost regressor on `["hour", "queue_size", "recent_avg_wait_tim
 
 | Column | Description |
 |---|---|
+| `timestamp` | Wall-clock datetime when the customer was served |
 | `hour` | Hour of day (0–23) when the customer was served |
 | `queue_size` | Number of people counted in queue at that moment |
 | `recent_avg_wait_time` | Rolling average of the last 20 recorded wait times (seconds) |
