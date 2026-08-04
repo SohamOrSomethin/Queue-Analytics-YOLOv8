@@ -159,6 +159,9 @@ def process_video(
                         and not tracked[track_id]["served"]
                     ):
                         wait_time = current_time - tracked[track_id]["enter_time"]
+                        tracked[track_id]["served"] = True
+                        if wait_time <= 3.5:
+                           continue
                         new_wait = wait_time
                         print(f"Person {track_id} served after {wait_time:.2f} seconds (video time)")
                         recent_waits.append((track_id, wait_time))
@@ -167,14 +170,12 @@ def process_video(
                             print(f"{i}: Person {pid} -> {t:.2f}s")
                         print("-" * 40)
 
+                        if len(recent_waits) > 20:
+                            recent_waits.pop(0)
 
                         now = datetime.now()
                         hour = now.hour
                         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-
-                        tracked[track_id]["served"] = True
-                        if len(recent_waits) > 20:
-                            recent_waits.pop(0)
 
                     if inside_queue_id is not None:
                         if track_id not in tracked:
@@ -320,14 +321,6 @@ def process_video(
      }
 
 def open_ffmpeg_pipe(stream_url, width, height):
-    """
-    Pipe stream frames through a system ffmpeg subprocess.
-
-    Why: OpenCV's internal ffmpeg cannot handle YouTube CDN URL rotation mid-stream.
-    When the CDN URL expires it throws a TLS error and the capture dies.
-    System ffmpeg handles m3u8 playlists natively — it fetches new segment URLs
-    automatically and never drops the stream.
-    """
     # Use the bundled ffmpeg binary from imageio-ffmpeg.
     # This avoids requiring the user to install ffmpeg and add it to PATH.
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
