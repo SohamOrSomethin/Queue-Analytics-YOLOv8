@@ -37,6 +37,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
     tracked = {}
     recent_waits = []
     frame_index = 0
+    total_logged = 0
 
     print(f"Stream opened. FPS: {fps:.1f}. Recording to {output_csv}.")
     print("Press Ctrl+C to stop.\n")
@@ -59,6 +60,20 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
 
             results = model.track(frame, persist=True, verbose=False)
 
+            # --- Periodic status every 100 frames ---
+            if frame_index % 100 == 0:
+                n_detected = len(results[0].boxes) if results[0].boxes is not None else 0
+                n_in_queue = sum(
+                    1 for info in tracked.values() if not info["served"]
+                )
+                n_counted = sum(
+                    1 for info in tracked.values() if info["counted"] and not info["served"]
+                )
+                print(
+                    f"[Frame {frame_index:5d} | t={current_time:6.1f}s] "
+                    f"Detected: {n_detected}  In-queue tracked: {n_in_queue}  "
+                    f"Counted(≥3s): {n_counted}  Logged rows: {total_logged}"
+                )
             if results[0].boxes is not None:
                 for box in results[0].boxes:
                     cls = int(box.cls[0])
@@ -78,27 +93,96 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         for roi in queue_rois
                     )
 
-                    # Person reached cashier → record their wait time
-                    if (
-                        inside_cashier
-                        and track_id in tracked
-                        and tracked[track_id]["counted"]
-                        and not tracked[track_id]["served"]
-                    ):
-                        wait_time = current_time - tracked[track_id]["enter_time"]
-                        tracked[track_id]["served"] = True
-                        hour = datetime.now().hour
+                    # ── Queue ROI path: person entered via the queue zone ──────────────
+                    if inside_queue:
+                        if track_id not in tracked:
+                            print(f"  -> ID {track_id} entered QUEUE zone at t={current_time:.1f}s  center=({center_x},{center_y})")
+                            tracked[track_id] = {
+                                "enter_time": current_time,
+                                "last_seen": current_time,
+                                "counted": False,
+                                "served": False,
+                                "inside_cashier": False,
+                                "via_cashier": False
+                            }
+                        tracked[track_id]["last_seen"] = current_time
+                        tracked[track_id]["inside_cashier"] = inside_cashier
+
+                        if current_time - tracked[track_id]["enter_time"] >= 3:
+                            if not tracked[track_id]["counted"]:
+                                print(f"  -> ID {track_id} now COUNTED (≥3s in queue)")
+                            tracked[track_id]["counted"] = True
+
+                        # If they've now crossed into cashier → log their queue wait
+                        if (
+                            inside_cashier
+                            and tracked[track_id]["counted"]
+                            and not tracked[track_id]["served"]
+                        ):
+                            wait_time = current_time - tracked[track_id]["enter_time"]
+                            tracked[track_id]["served"] = True
+                            total_logged += 1
+                            now = datetime.now()
+                            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+                            hour = now.hour
+
+                            queue_size = sum(
+                                1 for info in tracked.values()
+                                if info["counted"] and not info["served"]
+                                and not info.get("inside_cashier", False)
+                            )
+                            recent_waits.append(wait_time)
+                            if len(recent_waits) > 20:
+                                recent_waits.pop(0)
+                            recent_avg_wait = sum(recent_waits) / len(recent_waits)
+
+                            with open(output_csv, "a", newline="") as f:
+                                csv.writer(f).writerow([
+                                    timestamp, hour, queue_size,
+                                    round(recent_avg_wait, 2), round(wait_time, 2)
+                                ])
+                            print(
+                                f"Logged (queue→cashier) -> Hour: {hour}  |  Queue: {queue_size}  |  "
+                                f"Avg Wait: {recent_avg_wait:.1f}s  |  This Wait: {wait_time:.1f}s"
+                            )
+
+                    # ── Cashier-direct path: appeared in cashier with no prior queue entry ──
+                    elif inside_cashier:
+                        if track_id not in tracked:
+                            print(f"  -> ID {track_id} appeared at CASHIER directly at t={current_time:.1f}s  center=({center_x},{center_y})")
+                            tracked[track_id] = {
+                                "enter_time": current_time,
+                                "last_seen": current_time,
+                                "counted": False,
+                                "served": False,
+                                "inside_cashier": True,
+                                "via_cashier": True
+                            }
+                        tracked[track_id]["last_seen"] = current_time
+                        tracked[track_id]["inside_cashier"] = True
+
+                        # Count after 3s at cashier
+                        if current_time - tracked[track_id]["enter_time"] >= 3:
+                            if not tracked[track_id]["counted"]:
+                                print(f"  -> ID {track_id} COUNTED after ≥3s at cashier")
+                            tracked[track_id]["counted"] = True
+
+            # ── Log cashier-direct people when they disappear (exit cashier) ────────
+            for person_id in list(tracked.keys()):
+                info = tracked[person_id]
+                if current_time - info["last_seen"] > 2:
+                    if info["counted"] and not info["served"] and info.get("via_cashier"):
+                        wait_time = current_time - info["enter_time"]
+                        info["served"] = True
+                        total_logged += 1
                         now = datetime.now()
                         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+                        hour = now.hour
 
-                        # Current queue size (excludes people at cashier)
                         queue_size = sum(
-                            1 for info in tracked.values()
-                            if info["counted"]
-                            and not info["served"]
-                            and not info.get("inside_cashier", False)
+                            1 for i in tracked.values()
+                            if i["counted"] and not i["served"] and not i.get("inside_cashier", False)
                         )
-
                         recent_waits.append(wait_time)
                         if len(recent_waits) > 20:
                             recent_waits.pop(0)
@@ -106,38 +190,14 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
 
                         with open(output_csv, "a", newline="") as f:
                             csv.writer(f).writerow([
-                                timestamp,
-                                hour,
-                                queue_size,
-                                round(recent_avg_wait, 2),
-                                round(wait_time, 2)
+                                timestamp, hour, queue_size,
+                                round(recent_avg_wait, 2), round(wait_time, 2)
                             ])
-
                         print(
-                            f"Logged -> Hour: {hour}  |  Queue: {queue_size}  |  "
+                            f"Logged (cashier exit) -> Hour: {hour}  |  Queue: {queue_size}  |  "
                             f"Avg Wait: {recent_avg_wait:.1f}s  |  This Wait: {wait_time:.1f}s"
                         )
-
-                    if inside_queue:
-                        if track_id not in tracked:
-                            tracked[track_id] = {
-                                "enter_time": current_time,
-                                "last_seen": current_time,
-                                "counted": False,
-                                "served": False,
-                                "inside_cashier": False
-                            }
-                        tracked[track_id]["last_seen"] = current_time
-                        tracked[track_id]["inside_cashier"] = inside_cashier
-
-                        if current_time - tracked[track_id]["enter_time"] >= 3:
-                            tracked[track_id]["counted"] = True
-
-            # Remove people not seen for 2 video-seconds
-            for person_id in list(tracked.keys()):
-                if current_time - tracked[person_id]["last_seen"] > 2:
                     del tracked[person_id]
-
     except KeyboardInterrupt:
         print("\nData generation stopped by user.")
     finally:
