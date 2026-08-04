@@ -45,6 +45,8 @@ def process_video(
             "recent_avg_wait_time",
             "actual_wait"
         ])
+            csv_file.flush()
+            os.fsync(csv_file.fileno())
     if is_youtube:
      stream_url, fps, width, height = resolve_youtube_stream(video_path)
 
@@ -240,6 +242,8 @@ def process_video(
          round(recent_avg_wait, 2),
          round(new_wait, 2)
         ])
+         csv_file.flush()
+         os.fsync(csv_file.fileno())
         new_wait = None
         # hour = datetime.now().hour
 

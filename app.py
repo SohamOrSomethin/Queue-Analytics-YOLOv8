@@ -12,6 +12,30 @@ from process_video import open_ffmpeg_pipe
 yolo_model = YOLO("yolov8n.pt")
 
 
+def load_saved_roi_state():
+    """
+    Load queue_rois / cashier_rois from rois.json on disk, if it exists,
+    into the same dict shape used by roi_state. Returns an empty state
+    if the file doesn't exist or can't be parsed.
+    """
+    import os
+    empty_state = {"queue_rois": [], "cashier_rois": [], "current_points": []}
+    if not os.path.exists("rois.json"):
+        return empty_state, False
+
+    try:
+        with open("rois.json", "r") as f:
+            data = json.load(f)
+        loaded_state = {
+            "queue_rois": data.get("queue_rois", []),
+            "cashier_rois": data.get("cashier_rois", []),
+            "current_points": []
+        }
+        return loaded_state, True
+    except Exception:
+        return empty_state, False
+
+
 def resolve_video_path(video_input, yt_url=None):
     if yt_url:
         return yt_url
@@ -71,13 +95,24 @@ def extract_first_frame(video_input, yt_url):
             return None, None, empty_state, "Could not read the first frame from the selected video."
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    roi_state = {
-        "queue_rois": [],
-        "cashier_rois": [],
-        "current_points": []
-    }
+    roi_state, loaded_from_file = load_saved_roi_state()
 
-    return video_path, frame_rgb, roi_state, "First frame loaded. Click points to start drawing an ROI."
+    if loaded_from_file:
+        n_queue = len(roi_state["queue_rois"])
+        n_cashier = len(roi_state["cashier_rois"])
+        message = (
+            f"First frame loaded. Loaded saved ROIs from rois.json "
+            f"({n_queue} queue, {n_cashier} cashier). "
+            f"Click points to draw a new ROI, or start generating dataset directly."
+        )
+    else:
+        message = "First frame loaded. Click points to start drawing an ROI."
+
+    # Return the RAW frame here — the overlay (if any saved ROIs were
+    # loaded) gets drawn in a separate .then() step in the click handler,
+    # so base_frame_state stays a clean, overlay-free copy for future
+    # point-adding/undo redraws.
+    return video_path, frame_rgb, roi_state, message
 
 
 def draw_roi_overlay(base_img, roi_state):
@@ -174,6 +209,21 @@ def save_current_polygon(base_img, roi_state, roi_type):
     return updated, roi_state, message
 
 
+def load_saved_rois_onto_frame(base_img):
+    roi_state, loaded_from_file = load_saved_roi_state()
+
+    if base_img is None:
+        return None, roi_state, "Load a video frame first before loading saved ROIs."
+
+    if not loaded_from_file:
+        return base_img, roi_state, "No rois.json found on disk yet."
+
+    updated = draw_roi_overlay(base_img, roi_state)
+    n_queue = len(roi_state["queue_rois"])
+    n_cashier = len(roi_state["cashier_rois"])
+    return updated, roi_state, f"Loaded saved ROIs from rois.json ({n_queue} queue, {n_cashier} cashier)."
+
+
 def save_rois_to_file(roi_state, output_path="rois.json"):
     data = {
         "queue_rois": roi_state["queue_rois"],
@@ -236,9 +286,18 @@ def run_live_monitor(video_path, roi_state, frame_skip):
         yield frame,status
 
 def generate_dataset(video_path, roi_state):
+    """
+    NOTE: this is a generator itself, so Gradio streams progress into the
+    roi_status textbox live instead of the button appearing to finish
+    instantly. process_video() contains `yield` statements, so simply
+    calling it without iterating it does NOTHING.
+    """
+    import os
+    import csv as _csv
 
     if not video_path:
-        return "Please load a video first."
+        yield "Please load a video first."
+        return
 
     queue_rois = [
         np.array([roi], dtype=np.int32)
@@ -250,24 +309,48 @@ def generate_dataset(video_path, roi_state):
         for roi in roi_state["cashier_rois"]
     ]
     is_youtube = (
-    "youtube.com" in video_path
-    or
-    "youtu.be" in video_path
+        "youtube.com" in video_path
+        or
+        "youtu.be" in video_path
     )
-    
-    process_video(
-        video_path=video_path,
-        model=yolo_model,
-        queue_rois=queue_rois,
-        cashier_rois=cashier_rois,
-        show_window=False,
-        generate_dataset=True,
-        csv_path="queue_data.csv",
-        is_youtube=is_youtube
-    )
-    
 
-    return "Dataset generation complete."
+    csv_path = "queue_data.csv"
+
+    def count_rows():
+        if not os.path.exists(csv_path):
+            return 0
+        with open(csv_path, newline="") as f:
+            return max(0, sum(1 for _ in _csv.reader(f)) - 1)
+
+    rows_before = count_rows()
+    yield "Starting dataset generation... (resolving stream, this can take a few seconds)"
+
+    frame_count = 0
+    try:
+        for frame, status in process_video(
+            video_path=video_path,
+            model=yolo_model,
+            queue_rois=queue_rois,
+            cashier_rois=cashier_rois,
+            show_window=False,
+            generate_dataset=True,
+            csv_path=csv_path,
+            is_youtube=is_youtube,
+            gradio_mode=True,
+        ):
+            frame_count += 1
+            if frame_count % 5 == 0:
+                rows_now = count_rows() - rows_before
+                yield f"Processing frame {frame_count}... (rows written so far: {rows_now})\n{status}"
+    except Exception as e:
+        yield f"Dataset generation stopped with an error: {e}"
+        return
+
+    rows_written = count_rows() - rows_before
+    if rows_written <= 0:
+        yield "Dataset generation complete. No valid events detected. Rows written: 0"
+    else:
+        yield f"Dataset generation complete. Rows written: {rows_written}"
 
 with gr.Blocks() as demo:
     gr.Markdown("# Queue Analytics: ROI Setup + Live Queue Monitor")
@@ -305,6 +388,7 @@ with gr.Blocks() as demo:
                     
                     gr.Markdown("### 3. Save Configuration")
                     save_rois_btn = gr.Button("Save All ROIs to rois.json", variant="primary")
+                    load_rois_btn = gr.Button("Load Saved ROIs", variant="secondary")
                     gen_data_btn = gr.Button("Start generating dataset", variant="primary")
                     
                     roi_status = gr.Textbox(label="ROI Status", lines=3)
@@ -337,6 +421,10 @@ with gr.Blocks() as demo:
         fn=lambda img: img,
         inputs=[roi_image],
         outputs=[base_frame_state]
+    ).then(
+        fn=draw_roi_overlay,
+        inputs=[base_frame_state, roi_state],
+        outputs=[roi_image]
     ).then(
         fn=format_roi_summary,
         inputs=[roi_state],
@@ -398,6 +486,16 @@ with gr.Blocks() as demo:
         fn=save_rois_to_file,
         inputs=[roi_state],
         outputs=[roi_status]
+    ).then(
+        fn=format_roi_summary,
+        inputs=[roi_state],
+        outputs=[roi_summary]
+    )
+
+    load_rois_btn.click(
+        fn=load_saved_rois_onto_frame,
+        inputs=[base_frame_state],
+        outputs=[roi_image, roi_state, roi_status]
     ).then(
         fn=format_roi_summary,
         inputs=[roi_state],
