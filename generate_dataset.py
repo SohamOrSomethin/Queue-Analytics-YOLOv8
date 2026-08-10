@@ -2,12 +2,16 @@ import cv2
 import sys
 import subprocess
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import os
 from ultralytics import YOLO
 import yt_dlp
 from process_video import load_rois, resolve_youtube_stream, open_ffmpeg_pipe
+
+# Philippines Standard Time = IST + 2h30m
+PHT_OFFSET = timedelta(hours=2, minutes=30)
+
 
 
 
@@ -122,7 +126,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                             wait_time = current_time - tracked[track_id]["enter_time"]
                             tracked[track_id]["served"] = True
                             total_logged += 1
-                            now = datetime.now()
+                            now = datetime.now() + PHT_OFFSET
                             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
                             hour = now.hour
 
@@ -175,7 +179,7 @@ def generate_dataset_headless(yt_url, output_csv="queue_data.csv"):
                         wait_time = current_time - info["enter_time"]
                         info["served"] = True
                         total_logged += 1
-                        now = datetime.now()
+                        now = datetime.now() + PHT_OFFSET
                         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
                         hour = now.hour
 
