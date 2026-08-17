@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
 import csv
 import yt_dlp
@@ -26,7 +26,8 @@ def process_video(
     csv_path=None,
     frame_skip=2,
     is_youtube=False,
-    gradio_mode=False
+    gradio_mode=False,
+    xgb_model=None
 ):
 
     if generate_dataset:
@@ -61,16 +62,17 @@ def process_video(
      fps = cap.get(cv2.CAP_PROP_FPS) or 30
 
     recent_waits = []
+    PHT = timezone(timedelta(hours=8))
     tracked = {}
     count = 0
     queue_counts = [0] * len(queue_rois)
-    hour = datetime.now().hour
+    hour = datetime.now(PHT).hour
     frame_index = 0
 
     while True:
         new_wait = None
         timestamp = None
-        hour = None
+        hour = datetime.now(PHT).hour
         if is_youtube:
          raw = pipe.stdout.read(frame_size)
          if len(raw) < frame_size:
@@ -173,7 +175,7 @@ def process_video(
                         if len(recent_waits) > 20:
                             recent_waits.pop(0)
 
-                        now = datetime.now()
+                        now = datetime.now(PHT)
                         hour = now.hour
                         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -276,11 +278,21 @@ def process_video(
             ]
             )
 
+            if xgb_model is not None:
+                import numpy as _np
+                features = _np.array([[hour, count, round(recent_avg_wait, 2)]])
+                predicted_wait = float(xgb_model.predict(features)[0])
+                predicted_wait = max(0, predicted_wait)
+                pred_line = f"Predicted Wait Time: {predicted_wait:.1f} seconds"
+            else:
+                pred_line = "Predicted Wait Time: (model not loaded)"
+
             status_text = (
                 f"Detected Queue Size: {count} people\n"
                 f"{queue_lines_text}\n"
                 f"Hour: {hour}:00\n"
                 f"Average Wait Time: {recent_avg_wait:.2f} seconds\n"
+                f"{pred_line}\n"
                 f"Served Count Sample Size: {len(recent_waits)}"
             )
 

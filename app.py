@@ -1,4 +1,6 @@
 import json
+import os
+import joblib
 import cv2
 import numpy as np
 import gradio as gr
@@ -10,6 +12,15 @@ from process_video import resolve_youtube_stream
 from process_video import open_ffmpeg_pipe
 
 yolo_model = YOLO("yolov8n.pt")
+
+# Load the XGBoost wait-time prediction model if available
+_MODEL_PATH = "xgboost_model.pkl"
+if os.path.exists(_MODEL_PATH):
+    xgb_model = joblib.load(_MODEL_PATH)
+    print(f"[app] Loaded XGBoost model from {_MODEL_PATH}")
+else:
+    xgb_model = None
+    print(f"[app] Warning: {_MODEL_PATH} not found. Predictions will be unavailable.")
 
 
 def load_saved_roi_state():
@@ -281,7 +292,8 @@ def run_live_monitor(video_path, roi_state, frame_skip):
         show_window=False,
         gradio_mode=True,
         generate_dataset=False,
-        is_youtube=is_youtube
+        is_youtube=is_youtube,
+        xgb_model=xgb_model
         ):
         yield frame,status
 
