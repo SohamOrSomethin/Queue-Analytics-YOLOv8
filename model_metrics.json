@@ -1,0 +1,24 @@
+{
+    "dataset_file": "queue_data.csv",
+    "raw_rows": 1029,
+    "clean_rows": 1021,
+    "features": [
+        "hour",
+        "queue_size",
+        "recent_avg_wait_time"
+    ],
+    "target": "actual_wait",
+    "wait_time_unit": "seconds",
+    "invalid_wait_rule": "actual_wait < 1 or actual_wait > 200",
+    "xgboost_metrics": {
+        "mae_seconds": 14.9,
+        "rmse_seconds": 23.94,
+        "r2_score": 0.0902
+    },
+    "baseline_metrics": {
+        "mae_seconds": 16.17,
+        "rmse_seconds": 25.11,
+        "r2_score": -0.0002
+    },
+    "mae_improvement_percent": 7.85
+}
