@@ -4,14 +4,15 @@ import numpy as np
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import GridSearchCV
 
-df = pd.read_csv("queue_data.csv")
+df = pd.read_csv("queue_data_cleaned.csv")
 
 # Features are only what the vision pipeline can actually observe:
 #   hour              → time of day signal
 #   queue_size        → number of people currently counted in queue
 #   recent_avg_wait_time → rolling average of recent actual wait times (context signal)
-FEATURES = ["hour", "queue_size", "recent_avg_wait_time"]
+FEATURES = ["hour", "queue_size", "recent_avg_wait_time", "day_of_week"]
 TARGET = "actual_wait"
 
 # Validate that the CSV has the expected columns
