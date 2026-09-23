@@ -280,7 +280,9 @@ def process_video(
 
             if xgb_model is not None:
                 import numpy as _np
-                features = _np.array([[hour, count, round(recent_avg_wait, 2)]])
+                day_of_week = datetime.now(PHT).isoweekday()
+                # Features: ["hour", "queue_size", "recent_avg_wait_time", "day_of_week"]
+                features = _np.array([[hour, count, round(recent_avg_wait, 2), day_of_week]])
                 predicted_wait = float(xgb_model.predict(features)[0])
                 predicted_wait = max(0, predicted_wait)
                 pred_line = f"Predicted Wait Time: {predicted_wait:.1f} seconds"
