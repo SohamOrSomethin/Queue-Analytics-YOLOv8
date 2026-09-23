@@ -15,6 +15,8 @@ df = pd.read_csv("queue_data_cleaned.csv")
 FEATURES = ["hour", "queue_size", "recent_avg_wait_time", "day_of_week"]
 TARGET = "actual_wait"
 
+
+
 # Validate that the CSV has the expected columns
 missing = [c for c in FEATURES + [TARGET] if c not in df.columns]
 if missing:
@@ -30,17 +32,23 @@ y = df[TARGET]
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-model = xgb.XGBRegressor(
-    objective='reg:squarederror',
-    n_estimators=100,
-    learning_rate=0.1,
-    max_depth=3,
-    random_state=42
-)
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', random_state=42)
 
-model.fit(X_train, y_train)
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'learning_rate': [0.01, 0.05, 0.1],
+    'max_depth': [3, 5, 7]
+}
 
-predictions = model.predict(X_test)
+grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, cv=3, scoring='neg_mean_absolute_error', verbose=1)
+
+print("Tuning hyperparameters... this might take a minute.")
+grid_search.fit(X_train, y_train)
+
+best_model = grid_search.best_estimator_
+print(f"Best Parameters found: {grid_search.best_params_}")
+
+predictions = best_model.predict(X_test)
 mae = mean_absolute_error(y_test, predictions)
 r2 = r2_score(y_test, predictions)
 
@@ -48,5 +56,5 @@ print("--- REGRESSION METRICS ---")
 print(f"XGBoost MAE: {mae:.2f} seconds")
 print(f"XGBoost R^2: {r2:.2f}")
 
-joblib.dump(model, 'xgboost_model.pkl')
+joblib.dump(best_model, 'xgboost_model.pkl')
 print("\nModel saved to xgboost_model.pkl")
